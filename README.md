@@ -23,7 +23,7 @@ pip install secret-scanner
 Or from source:
 
 ```bash
-git clone https://github.com/yourusername/secret-scanner
+git clone https://github.com/Vasishta03/secret-scanner
 cd secret-scanner
 pip install -e .
 ```
@@ -142,7 +142,7 @@ scanner/
 ## Contributing
 
 ```bash
-git clone https://github.com/yourusername/secret-scanner
+git clone https://github.com/Vasishta03/secret-scanner
 cd secret-scanner
 pip install -e ".[dev]"
 pytest tests/
