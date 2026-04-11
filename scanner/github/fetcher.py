@@ -58,6 +58,22 @@ class GitHubFetcher:
             page += 1
         return repos
 
+    def list_gists(self, username: str) -> list[str]:
+        gists = []
+        page = 1
+        while True:
+            data = self._get(
+                f"{BASE_URL}/users/{username}/gists",
+                params={"per_page": 100, "page": page},
+            )
+            if not data:
+                break
+            gists.extend(g["id"] for g in data)
+            if len(data) < 100:
+                break
+            page += 1
+        return gists
+
     def get_default_branch(self, full_name: str) -> str:
         data = self._get(f"{BASE_URL}/repos/{full_name}")
         return data.get("default_branch", "main")
@@ -97,6 +113,16 @@ class GitHubFetcher:
             content = self.fetch_file(full_name, item["path"])
             if content is not None:
                 yield RepoFile(repo=full_name, path=item["path"], content=content)
+
+    def iter_gist_files(self, gist_id: str) -> Iterator[RepoFile]:
+        try:
+            data = self._get(f"{BASE_URL}/gists/{gist_id}")
+        except Exception:
+            return
+        for filename, file_info in data.get("files", {}).items():
+            content = file_info.get("content")
+            if content:
+                yield RepoFile(repo=f"gist:{gist_id}", path=filename, content=content)
 
     def iter_commit_diffs(self, full_name: str, depth: int = 50) -> Iterator[tuple[str, str, str]]:
         page = 1

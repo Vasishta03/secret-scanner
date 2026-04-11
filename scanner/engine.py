@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
@@ -11,6 +13,7 @@ from scanner.ignorefile import is_ignored, load_ignore_patterns
 from scanner.patterns import PATTERNS
 
 MAX_FILE_BYTES = 1_000_000
+_ALLOWLIST_RE = re.compile(r"#\s*(?:nosec|gitleaks:allow|secretscanner:allow)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -24,6 +27,10 @@ class Finding:
     entropy: Optional[float] = None
     source: str = "regex"
     commit: Optional[str] = None
+    verified: Optional[str] = None
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(f"{self.secret_type}:{self.matched_value}".encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -36,6 +43,8 @@ class ScanResult:
 
 
 def _check_line(line: str, line_number: int, filepath: str, entropy_threshold: float) -> list[Finding]:
+    if _ALLOWLIST_RE.search(line):
+        return []
     findings = []
     for pattern in PATTERNS:
         match = pattern.regex.search(line)
@@ -97,10 +106,21 @@ def _iter_diff_additions(patch: str, filepath: str = None) -> Iterator[tuple[str
             current_line += 1
 
 
+def _scan_file_worker(args: tuple) -> tuple[list[Finding] | None, str | None]:
+    path, eff_threshold = args
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        return _scan_content(text, str(path), eff_threshold), None
+    except Exception as e:
+        return None, f"{path}: {e}"
+
+
 def scan_path(root: Path, entropy_threshold: float = 4.5, no_entropy: bool = False) -> ScanResult:
     result = ScanResult()
     patterns = load_ignore_patterns(root)
+    eff_threshold = entropy_threshold if not no_entropy else 999.0
 
+    to_scan: list[Path] = []
     for path in _walk(root):
         if is_ignored(path, root, patterns):
             result.files_skipped += 1
@@ -109,14 +129,19 @@ def scan_path(root: Path, entropy_threshold: float = 4.5, no_entropy: bool = Fal
             if path.stat().st_size > MAX_FILE_BYTES:
                 result.files_skipped += 1
                 continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except Exception as e:
-            result.errors.append(f"{path}: {e}")
+        except Exception:
             result.files_skipped += 1
             continue
-        result.files_scanned += 1
-        eff_threshold = entropy_threshold if not no_entropy else 999.0
-        result.findings.extend(_scan_content(text, str(path), eff_threshold))
+        to_scan.append(path)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for findings, error in executor.map(_scan_file_worker, [(p, eff_threshold) for p in to_scan]):
+            if error:
+                result.errors.append(error)
+                result.files_skipped += 1
+            else:
+                result.findings.extend(findings)
+                result.files_scanned += 1
 
     return result
 
@@ -152,15 +177,23 @@ def scan_git_history(
     entropy_threshold: float = 4.5,
     no_entropy: bool = False,
     depth: int = 100,
+    since: Optional[str] = None,
+    branch: Optional[str] = None,
 ) -> ScanResult:
     result = ScanResult()
     eff_threshold = entropy_threshold if not no_entropy else 999.0
 
+    cmd = ["git", "-C", str(root), "log", "--format=%H"]
+    if branch:
+        cmd.append(branch)
+    else:
+        cmd.append("--all")
+    cmd.append(f"-{depth}")
+    if since:
+        cmd.append(f"--since={since}")
+
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(root), "log", "--format=%H", f"-{depth}", "--all"],
-            capture_output=True, text=True, timeout=60,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
             result.errors.append("Not a git repository or git not available")
             return result

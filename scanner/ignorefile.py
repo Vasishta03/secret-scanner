@@ -1,5 +1,6 @@
 import fnmatch
 import os
+import re
 from pathlib import Path
 
 IGNORE_FILENAME = ".secretignore"
@@ -8,9 +9,36 @@ DEFAULT_IGNORES = [
     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.svg",
     "*.pdf", "*.zip", "*.tar", "*.gz", "*.bin", "*.exe",
     "*.lock", "*.sum",
-    ".git/*", "node_modules/*", "__pycache__/*", ".venv/*",
+    ".git/**", "node_modules/**", "__pycache__/**", ".venv/**",
     "*.pyc", "*.pyo",
 ]
+
+
+def _glob_to_regex(pattern: str) -> re.Pattern:
+    parts = pattern.replace("\\", "/").split("/")
+    regex_parts = []
+    for part in parts:
+        if part == "**":
+            regex_parts.append(".*")
+        else:
+            regex_parts.append(re.escape(part).replace(r"\*", "[^/]*").replace(r"\?", "[^/]"))
+    return re.compile("^" + "/".join(regex_parts) + "$")
+
+
+def _matches(rel_str: str, pattern: str) -> bool:
+    normalized = rel_str.replace("\\", "/")
+    name = normalized.split("/")[-1]
+
+    if "**" not in pattern and "/" not in pattern:
+        return fnmatch.fnmatch(name, pattern)
+
+    if "**" in pattern:
+        try:
+            return bool(_glob_to_regex(pattern).match(normalized))
+        except re.error:
+            return False
+
+    return fnmatch.fnmatch(normalized, pattern)
 
 
 def load_ignore_patterns(root: Path) -> list[str]:
@@ -32,15 +60,9 @@ def is_ignored(path: Path, root: Path, patterns: list[str]) -> bool:
         relative = path
 
     rel_str = str(relative)
-    name = path.name
 
     for pattern in patterns:
-        if fnmatch.fnmatch(name, pattern):
+        if _matches(rel_str, pattern):
             return True
-        if fnmatch.fnmatch(rel_str, pattern):
-            return True
-        if pattern.endswith("/*"):
-            dir_part = pattern[:-2]
-            if rel_str.startswith(dir_part + os.sep) or rel_str.startswith(dir_part + "/"):
-                return True
+
     return False

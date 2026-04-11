@@ -20,15 +20,30 @@ SEVERITY_COLORS = {
     "MEDIUM":   "yellow",
     "LOW":      "dim white",
 }
-
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+VERIFIED_STYLE = {
+    "LIVE":    ("[bold green]LIVE[/bold green]",    "bold green"),
+    "REVOKED": ("[dim green]REVOKED[/dim green]",   "dim green"),
+}
 
 
 def _sorted(findings: list[Finding]) -> list[Finding]:
     return sorted(findings, key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.file, f.line_number))
 
 
-def print_terminal(result: ScanResult) -> None:
+def _redact(value: str) -> str:
+    if len(value) <= 8:
+        return "*" * len(value)
+    keep = min(4, len(value) // 4)
+    return value[:keep] + "*" * (len(value) - 2 * keep) + value[-keep:]
+
+
+def _display(value: str, redact: bool) -> str:
+    return _redact(value) if redact else value
+
+
+def print_terminal(result: ScanResult, redact: bool = False) -> None:
     findings = _sorted(result.findings)
 
     if not findings:
@@ -37,6 +52,7 @@ def print_terminal(result: ScanResult) -> None:
         return
 
     has_commits = any(f.commit for f in findings)
+    has_verified = any(f.verified for f in findings)
 
     table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold white", expand=True)
     table.add_column("Severity", style="bold", width=10)
@@ -46,19 +62,30 @@ def print_terminal(result: ScanResult) -> None:
     table.add_column("Match", style="dim white", no_wrap=False)
     if has_commits:
         table.add_column("Commit", style="dim cyan", width=13, no_wrap=True)
+    if has_verified:
+        table.add_column("Status", width=9, no_wrap=True)
 
     for f in findings:
         color = SEVERITY_COLORS.get(f.severity, "white")
         entropy_tag = f" (H={f.entropy})" if f.entropy else ""
+        display_val = _display(f.matched_value, redact)
         row = [
             Text(f.severity, style=color),
             f.secret_type + entropy_tag,
             f.file,
             str(f.line_number),
-            f.matched_value[:60] + ("..." if len(f.matched_value) > 60 else ""),
+            display_val[:60] + ("..." if len(display_val) > 60 else ""),
         ]
         if has_commits:
             row.append(f.commit or "")
+        if has_verified:
+            v = f.verified
+            if v == "LIVE":
+                row.append(Text("LIVE", style="bold green"))
+            elif v == "REVOKED":
+                row.append(Text("REVOKED", style="dim green"))
+            else:
+                row.append(Text("?", style="dim"))
         table.add_row(*row)
 
     console.print(table)
@@ -77,21 +104,23 @@ def _print_summary(result: ScanResult) -> None:
             parts.append(f"[{color}]{counts[sev]} {sev}[/{color}]")
 
     summary_str = "  ".join(parts) if parts else "[green]0 findings[/green]"
-
-    scanned_label = f"{result.files_scanned} files"
+    scanned = f"{result.files_scanned} files"
     if result.commits_scanned:
-        scanned_label += f" + {result.commits_scanned} commits"
+        scanned += f" + {result.commits_scanned} commits"
+
+    live = sum(1 for f in result.findings if f.verified == "LIVE")
+    live_str = f"  [bold green]{live} LIVE[/bold green]" if live else ""
 
     console.print(
-        f"\n[bold]Scanned:[/bold] {scanned_label}  "
+        f"\n[bold]Scanned:[/bold] {scanned}  "
         f"[bold]Skipped:[/bold] {result.files_skipped}  "
-        f"[bold]Findings:[/bold] {summary_str}"
+        f"[bold]Findings:[/bold] {summary_str}{live_str}"
     )
     if result.errors:
         console.print(f"[dim]Errors: {len(result.errors)}[/dim]")
 
 
-def to_json(result: ScanResult) -> str:
+def to_json(result: ScanResult, redact: bool = False) -> str:
     findings = _sorted(result.findings)
     return json.dumps(
         {
@@ -111,10 +140,12 @@ def to_json(result: ScanResult) -> str:
                     "type": f.secret_type,
                     "file": f.file,
                     "line": f.line_number,
-                    "match": f.matched_value,
+                    "match": _display(f.matched_value, redact),
                     "entropy": f.entropy,
                     "source": f.source,
                     "commit": f.commit,
+                    "verified": f.verified,
+                    "fingerprint": f.fingerprint(),
                 }
                 for f in findings
             ],
@@ -123,12 +154,12 @@ def to_json(result: ScanResult) -> str:
     )
 
 
-def to_csv(result: ScanResult) -> str:
+def to_csv(result: ScanResult, redact: bool = False) -> str:
     findings = _sorted(result.findings)
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf,
-        fieldnames=["severity", "type", "file", "line", "match", "entropy", "source", "commit"],
+        fieldnames=["severity", "type", "file", "line", "match", "entropy", "source", "commit", "verified", "fingerprint"],
     )
     writer.writeheader()
     for f in findings:
@@ -137,15 +168,75 @@ def to_csv(result: ScanResult) -> str:
             "type": f.secret_type,
             "file": f.file,
             "line": f.line_number,
-            "match": f.matched_value,
+            "match": _display(f.matched_value, redact),
             "entropy": f.entropy or "",
             "source": f.source,
             "commit": f.commit or "",
+            "verified": f.verified or "",
+            "fingerprint": f.fingerprint(),
         })
     return buf.getvalue()
 
 
-def to_disclosure_report(username: str, result: ScanResult) -> str:
+def to_sarif(result: ScanResult) -> str:
+    from scanner.patterns import PATTERNS
+    findings = _sorted(result.findings)
+    present_types = {f.secret_type for f in findings}
+    pattern_map = {p.name: p for p in PATTERNS}
+
+    rules = []
+    for t in sorted(present_types):
+        p = pattern_map.get(t)
+        rules.append({
+            "id": t,
+            "name": t.replace(" ", ""),
+            "shortDescription": {"text": p.description if p else t},
+            "defaultConfiguration": {
+                "level": _sarif_level(p.severity if p else "MEDIUM")
+            },
+            "helpUri": "https://github.com/Vasishta03/secret-scanner",
+        })
+
+    sarif = {
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "secret-scanner",
+                    "version": "0.2.0",
+                    "informationUri": "https://github.com/Vasishta03/secret-scanner",
+                    "rules": rules,
+                }
+            },
+            "results": [
+                {
+                    "ruleId": f.secret_type,
+                    "level": _sarif_level(f.severity),
+                    "message": {"text": f"{f.secret_type} detected in {f.file}"},
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": f.file.replace("\\", "/"),
+                                "uriBaseId": "%SRCROOT%",
+                            },
+                            "region": {"startLine": f.line_number},
+                        }
+                    }],
+                    "partialFingerprints": {"primaryLocationLineHash": f.fingerprint()},
+                }
+                for f in findings
+            ],
+        }],
+    }
+    return json.dumps(sarif, indent=2)
+
+
+def _sarif_level(severity: str) -> str:
+    return {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning", "LOW": "note"}.get(severity, "note")
+
+
+def to_disclosure_report(username: str, result: ScanResult, redact: bool = False) -> str:
     findings = _sorted(result.findings)
     critical_high = [f for f in findings if f.severity in ("CRITICAL", "HIGH")]
 
@@ -165,15 +256,16 @@ def to_disclosure_report(username: str, result: ScanResult) -> str:
     ]
 
     for f in findings:
-        commit_line = f"- **Commit:** `{f.commit}`" if f.commit else ""
         lines += [
             f"### [{f.severity}] {f.secret_type}",
             f"- **Repository/File:** `{f.file}`",
             f"- **Line:** {f.line_number}",
             f"- **Detected via:** {f.source}",
         ]
-        if commit_line:
-            lines.append(commit_line)
+        if f.commit:
+            lines.append(f"- **Commit:** `{f.commit}`")
+        if f.verified:
+            lines.append(f"- **Verified:** {f.verified}")
         lines += [
             "",
             "**Recommendation:** Rotate this credential immediately and audit access logs.",
@@ -189,7 +281,7 @@ def to_disclosure_report(username: str, result: ScanResult) -> str:
         "4. Review git history — secrets committed then deleted are still visible.",
         "",
         "---",
-        "*Report generated by [secret-scanner](https://github.com/your-username/secret-scanner)*",
+        "*Report generated by [secret-scanner](https://github.com/Vasishta03/secret-scanner)*",
     ]
 
     return "\n".join(lines)

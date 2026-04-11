@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secret-scanner"
-version = "0.1.0"
-description = "CLI tool to detect leaked secrets and API keys in codebases and public GitHub repos"
+version = "0.2.0"
+description = "CLI tool to detect leaked secrets and API keys in codebases and public GitHub repos — including git history"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
