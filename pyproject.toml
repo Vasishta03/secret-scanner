@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "secret-scanner"
+name = "leakscan"
 version = "0.2.0"
 description = "CLI tool to detect leaked secrets and API keys in codebases and public GitHub repos — including git history"
 readme = "README.md"

@@ -2,7 +2,7 @@
 
 A CLI tool that scans local codebases and public GitHub repos for leaked API keys and secrets — including secrets deleted from code but still alive in git history.
 
-![demo](demo.svg)
+![demo](https://raw.githubusercontent.com/Vasishta03/secret-scanner/main/demo.svg)
 
 ## Features
 
@@ -40,7 +40,7 @@ A CLI tool that scans local codebases and public GitHub repos for leaked API key
 ## Installation
 
 ```bash
-pip install secret-scanner
+pip install leakscan
 ```
 
 Or from source:
