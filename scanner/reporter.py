@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import csv
+import io
+import json
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich import box
+from rich.text import Text
+
+from scanner.engine import Finding, ScanResult
+
+console = Console(stderr=False)
+
+SEVERITY_COLORS = {
+    "CRITICAL": "bold red",
+    "HIGH":     "red",
+    "MEDIUM":   "yellow",
+    "LOW":      "dim white",
+}
+
+SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def _sorted(findings: list[Finding]) -> list[Finding]:
+    return sorted(findings, key=lambda f: (SEVERITY_ORDER.get(f.severity, 9), f.file, f.line_number))
+
+
+def print_terminal(result: ScanResult) -> None:
+    findings = _sorted(result.findings)
+
+    if not findings:
+        console.print(Panel("[bold green]No secrets found.[/bold green]", expand=False))
+        _print_summary(result)
+        return
+
+    has_commits = any(f.commit for f in findings)
+
+    table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold white", expand=True)
+    table.add_column("Severity", style="bold", width=10)
+    table.add_column("Type", style="cyan", no_wrap=False)
+    table.add_column("File", style="blue", no_wrap=False)
+    table.add_column("Line", style="white", width=6)
+    table.add_column("Match", style="dim white", no_wrap=False)
+    if has_commits:
+        table.add_column("Commit", style="dim cyan", width=13, no_wrap=True)
+
+    for f in findings:
+        color = SEVERITY_COLORS.get(f.severity, "white")
+        entropy_tag = f" (H={f.entropy})" if f.entropy else ""
+        row = [
+            Text(f.severity, style=color),
+            f.secret_type + entropy_tag,
+            f.file,
+            str(f.line_number),
+            f.matched_value[:60] + ("..." if len(f.matched_value) > 60 else ""),
+        ]
+        if has_commits:
+            row.append(f.commit or "")
+        table.add_row(*row)
+
+    console.print(table)
+    _print_summary(result)
+
+
+def _print_summary(result: ScanResult) -> None:
+    counts: dict[str, int] = {}
+    for f in result.findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+
+    parts = []
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        if sev in counts:
+            color = SEVERITY_COLORS[sev]
+            parts.append(f"[{color}]{counts[sev]} {sev}[/{color}]")
+
+    summary_str = "  ".join(parts) if parts else "[green]0 findings[/green]"
+
+    scanned_label = f"{result.files_scanned} files"
+    if result.commits_scanned:
+        scanned_label += f" + {result.commits_scanned} commits"
+
+    console.print(
+        f"\n[bold]Scanned:[/bold] {scanned_label}  "
+        f"[bold]Skipped:[/bold] {result.files_skipped}  "
+        f"[bold]Findings:[/bold] {summary_str}"
+    )
+    if result.errors:
+        console.print(f"[dim]Errors: {len(result.errors)}[/dim]")
+
+
+def to_json(result: ScanResult) -> str:
+    findings = _sorted(result.findings)
+    return json.dumps(
+        {
+            "summary": {
+                "files_scanned": result.files_scanned,
+                "commits_scanned": result.commits_scanned,
+                "files_skipped": result.files_skipped,
+                "total_findings": len(findings),
+                "by_severity": {
+                    sev: sum(1 for f in findings if f.severity == sev)
+                    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+                },
+            },
+            "findings": [
+                {
+                    "severity": f.severity,
+                    "type": f.secret_type,
+                    "file": f.file,
+                    "line": f.line_number,
+                    "match": f.matched_value,
+                    "entropy": f.entropy,
+                    "source": f.source,
+                    "commit": f.commit,
+                }
+                for f in findings
+            ],
+        },
+        indent=2,
+    )
+
+
+def to_csv(result: ScanResult) -> str:
+    findings = _sorted(result.findings)
+    buf = io.StringIO()
+    writer = csv.DictWriter(
+        buf,
+        fieldnames=["severity", "type", "file", "line", "match", "entropy", "source", "commit"],
+    )
+    writer.writeheader()
+    for f in findings:
+        writer.writerow({
+            "severity": f.severity,
+            "type": f.secret_type,
+            "file": f.file,
+            "line": f.line_number,
+            "match": f.matched_value,
+            "entropy": f.entropy or "",
+            "source": f.source,
+            "commit": f.commit or "",
+        })
+    return buf.getvalue()
+
+
+def to_disclosure_report(username: str, result: ScanResult) -> str:
+    findings = _sorted(result.findings)
+    critical_high = [f for f in findings if f.severity in ("CRITICAL", "HIGH")]
+
+    lines = [
+        "# Security Disclosure Report",
+        "",
+        f"**Target:** GitHub user `{username}`",
+        f"**Findings:** {len(findings)} total ({len(critical_high)} critical/high)",
+        "",
+        "## Summary",
+        "",
+        "This report was generated by an automated secret scanner. "
+        "The following potential secrets were detected in public repositories.",
+        "",
+        "## Findings",
+        "",
+    ]
+
+    for f in findings:
+        commit_line = f"- **Commit:** `{f.commit}`" if f.commit else ""
+        lines += [
+            f"### [{f.severity}] {f.secret_type}",
+            f"- **Repository/File:** `{f.file}`",
+            f"- **Line:** {f.line_number}",
+            f"- **Detected via:** {f.source}",
+        ]
+        if commit_line:
+            lines.append(commit_line)
+        lines += [
+            "",
+            "**Recommendation:** Rotate this credential immediately and audit access logs.",
+            "",
+        ]
+
+    lines += [
+        "## Recommended Actions",
+        "",
+        "1. Rotate all identified credentials immediately.",
+        "2. Use environment variables or a secrets manager (e.g. Vault, AWS Secrets Manager).",
+        "3. Add pre-commit hooks to prevent future leaks.",
+        "4. Review git history — secrets committed then deleted are still visible.",
+        "",
+        "---",
+        "*Report generated by [secret-scanner](https://github.com/your-username/secret-scanner)*",
+    ]
+
+    return "\n".join(lines)
