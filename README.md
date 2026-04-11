@@ -2,6 +2,8 @@
 
 A CLI tool that scans local codebases and public GitHub repos for leaked API keys and secrets — including secrets deleted from code but still alive in git history.
 
+![demo](demo.svg)
+
 ## Features
 
 **Detection**
