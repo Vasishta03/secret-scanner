@@ -1,6 +1,6 @@
 # secret-scanner
 
-A CLI tool that scans local codebases and public GitHub repos for leaked API keys and secrets — including secrets deleted from code but still alive in git history.
+A CLI tool that scans local codebases and public GitHub repos for leaked API keys and secrets including secrets deleted from code but still alive in git history.
 
 ![demo](https://raw.githubusercontent.com/Vasishta03/secret-scanner/main/demo.svg)
 
@@ -10,7 +10,7 @@ A CLI tool that scans local codebases and public GitHub repos for leaked API key
 - 55+ regex patterns: AWS, GitHub, GitLab, Stripe, OpenAI, Anthropic, Slack, Twilio, Discord, Telegram, npm, PyPI, Shopify, DigitalOcean, Dropbox, Notion, Linear, Terraform, Vault, New Relic, Mapbox, Square, Mailchimp, and more
 - Shannon entropy detection for unquoted values (`.env`, YAML, INI files)
 - Inline suppression: `# nosec`, `# gitleaks:allow`, `# secretscanner:allow`
-- AWS Access Key ID pattern anchored to real prefixes (`AKIA`, `AGPA`, `AROA`, etc.) — no false positives on random uppercase strings
+- AWS Access Key ID pattern anchored to real prefixes (`AKIA`, `AGPA`, `AROA`, etc.) no false positives on random uppercase strings
 
 **Verification**
 - `--verify` makes live API calls to check if found secrets are still active
