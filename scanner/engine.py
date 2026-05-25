@@ -230,6 +230,48 @@ def scan_git_history(
     return result
 
 
+def scan_staged(
+    root: Path,
+    entropy_threshold: float = 4.5,
+    no_entropy: bool = False,
+) -> ScanResult:
+    """Scan only git staged (cached) changes. Ideal for pre-commit hooks."""
+    result = ScanResult()
+    eff_threshold = entropy_threshold if not no_entropy else 999.0
+
+    cmd = ["git", "-C", str(root), "diff", "--cached", "--unified=0"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            result.errors.append("Failed to read staged diff. Is this a git repository?")
+            return result
+    except FileNotFoundError:
+        result.errors.append("git not found in PATH")
+        return result
+    except Exception as e:
+        result.errors.append(str(e))
+        return result
+
+    patch = proc.stdout
+    if not patch.strip():
+        return result
+
+    seen: set[tuple] = set()
+    files_touched: set[str] = set()
+
+    for filepath, line_number, line_content in _iter_diff_additions(patch):
+        files_touched.add(filepath)
+        for f in _check_line(line_content, line_number, filepath, eff_threshold):
+            key = (f.matched_value, f.secret_type)
+            if key not in seen:
+                seen.add(key)
+                f.source = "staged"
+                result.findings.append(f)
+
+    result.files_scanned = len(files_touched)
+    return result
+
+
 def _walk(root: Path) -> Iterator[Path]:
     if root.is_file():
         yield root
