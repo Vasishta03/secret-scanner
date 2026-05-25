@@ -204,7 +204,7 @@ def to_sarif(result: ScanResult) -> str:
             "tool": {
                 "driver": {
                     "name": "secret-scanner",
-                    "version": "0.2.0",
+                    "version": "0.3.0",
                     "informationUri": "https://github.com/Vasishta03/secret-scanner",
                     "rules": rules,
                 }

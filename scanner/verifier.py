@@ -8,7 +8,7 @@ import requests
 from scanner.engine import Finding
 
 _session = requests.Session()
-_session.headers["User-Agent"] = "secret-scanner/0.2.0"
+_session.headers["User-Agent"] = "secret-scanner/0.3.0"
 _TIMEOUT = 5
 _cache: dict[tuple, Optional[str]] = {}
 
@@ -27,6 +27,13 @@ _EXTRACTORS: dict[str, re.Pattern] = {
     "Slack User Token":       re.compile(r"xoxp-[A-Za-z0-9\-]+"),
     "NPM Access Token":       re.compile(r"npm_[A-Za-z0-9]+"),
     "Replicate API Token":    re.compile(r"r8_[A-Za-z0-9]+"),
+    "Telegram Bot Token":     re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}"),
+    "Google API Key":         re.compile(r"AIza[0-9A-Za-z\-_]{35}"),
+    "Twilio Auth Token":      re.compile(r"[0-9a-f]{32}"),
+    "AWS Access Key ID":      re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}"),
+    "Sentry Auth Token":      re.compile(r"sntrys_[A-Za-z0-9]+"),
+    "Datadog API Key":        re.compile(r"[a-f0-9]{32}"),
+    "Vercel Token":           re.compile(r"vercel_[A-Za-z0-9]+"),
 }
 
 
@@ -129,6 +136,67 @@ def _do_verify(finding: Finding) -> Optional[str]:
 
     if t == "Replicate API Token":
         r = _get("https://api.replicate.com/v1/account", {"Authorization": f"Token {token}"})
+        if r is None:
+            return None
+        return "LIVE" if r.status_code == 200 else "REVOKED"
+
+    if t == "Telegram Bot Token":
+        r = _get(f"https://api.telegram.org/bot{token}/getMe", {})
+        if r is None:
+            return None
+        try:
+            data = r.json()
+            return "LIVE" if data.get("ok") else "REVOKED"
+        except Exception:
+            return "REVOKED" if r.status_code != 200 else None
+
+    if t == "Google API Key":
+        # Test against the Maps Geocoding API with a dummy request
+        r = _get(
+            f"https://maps.googleapis.com/maps/api/geocode/json?address=test&key={token}",
+            {},
+        )
+        if r is None:
+            return None
+        try:
+            data = r.json()
+            status = data.get("status", "")
+            if status in ("OK", "ZERO_RESULTS"):
+                return "LIVE"
+            elif status == "REQUEST_DENIED":
+                # Key exists but this API not enabled, still counts as live key
+                error_msg = data.get("error_message", "")
+                if "not authorized" in error_msg.lower() or "enable" in error_msg.lower():
+                    return "LIVE"
+                return "REVOKED"
+            return "REVOKED"
+        except Exception:
+            return None
+
+    if t == "Twilio Auth Token":
+        # Twilio verification requires Account SID + Auth Token pair.
+        # We cannot verify just the auth token alone without the SID.
+        return None
+
+    if t == "AWS Access Key ID":
+        # AWS verification requires both access key and secret key.
+        # We can only flag the key ID, not verify without the secret.
+        return None
+
+    if t == "Sentry Auth Token":
+        r = _get(
+            "https://sentry.io/api/0/",
+            {"Authorization": f"Bearer {token}"},
+        )
+        if r is None:
+            return None
+        return "LIVE" if r.status_code == 200 else "REVOKED"
+
+    if t == "Vercel Token":
+        r = _get(
+            "https://api.vercel.com/v2/user",
+            {"Authorization": f"Bearer {token}"},
+        )
         if r is None:
             return None
         return "LIVE" if r.status_code == 200 else "REVOKED"

@@ -17,8 +17,10 @@ from scanner.engine import (
     scan_git_history,
     scan_patch_string,
     scan_path,
+    scan_staged,
 )
 from scanner.github.fetcher import GitHubFetcher, RateLimitError
+from scanner.config import load_config
 from scanner import reporter
 
 console = Console()
@@ -67,6 +69,10 @@ def cli():
               help="Limit history scan to a specific branch (local only).")
 @click.option("--verify", is_flag=True, default=False,
               help="Verify whether found secrets are still live via API calls.")
+@click.option("--staged", is_flag=True, default=False,
+              help="Scan only git staged changes (for pre-commit use).")
+@click.option("--config", "config_path", default=None, metavar="FILE",
+              help="Path to .leakscan.yaml config file (auto-detected if omitted).")
 @click.option("--baseline", default=None, metavar="FILE",
               help="Filter out findings already in this baseline file.")
 @click.option("--save-baseline", default=None, metavar="FILE",
@@ -90,6 +96,8 @@ def scan(
     since: Optional[str],
     branch: Optional[str],
     verify: bool,
+    staged: bool,
+    config_path: Optional[str],
     baseline: Optional[str],
     save_baseline: Optional[str],
     redact: bool,
@@ -100,13 +108,35 @@ def scan(
     \b
     Examples:
       secrets scan ./myproject
+      secrets scan . --staged
       secrets scan . --history --since 2024-01-01
       secrets scan https://github.com/owner/repo --verify
       secrets scan --github username --include-gists
       secrets scan . --baseline .secrets.baseline
+      secrets scan . --config custom-rules.yaml
     """
     gh_owner: Optional[str] = None
     gh_repo_filter: Optional[str] = None
+
+    # Load config from file or auto-detect
+    target = Path(path).resolve()
+    if config_path:
+        cfg = load_config(Path(config_path).parent)
+    else:
+        cfg = load_config(target if target.is_dir() else target.parent)
+
+    # Apply config overrides (CLI flags take precedence)
+    if cfg.entropy_threshold is not None and entropy_threshold == 4.5:
+        entropy_threshold = cfg.entropy_threshold
+    if cfg.no_entropy is not None and not no_entropy:
+        no_entropy = cfg.no_entropy
+    if cfg.severity_threshold and not severity:
+        severity = cfg.severity_threshold
+
+    # Register custom patterns from config
+    if cfg.custom_patterns:
+        from scanner.patterns import PATTERNS
+        PATTERNS.extend(cfg.custom_patterns)
 
     if github:
         gh_owner = github
@@ -127,6 +157,11 @@ def scan(
             depth=depth or 50,
             include_gists=include_gists,
         )
+    elif staged:
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                      console=err_console, transient=True) as progress:
+            progress.add_task("Scanning staged changes...", total=None)
+            result = scan_staged(target, entropy_threshold, no_entropy)
     else:
         target = Path(path).resolve()
         if not target.exists():
@@ -329,7 +364,7 @@ BASELINE_ARG=""
 if [ -f .secrets.baseline ]; then
   BASELINE_ARG="--baseline .secrets.baseline"
 fi
-secrets scan . --severity HIGH --format terminal $BASELINE_ARG
+secrets scan . --staged --severity HIGH --format terminal $BASELINE_ARG
 if [ $? -ne 0 ]; then
   echo ""
   echo "Commit blocked: secrets detected."
