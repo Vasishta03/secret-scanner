@@ -3,8 +3,7 @@
 A fast, lightweight CLI tool that finds leaked API keys and secrets in your code, git history, and public GitHub profiles. Pure Python, zero config, installs in seconds.
 
 [![PyPI version](https://img.shields.io/pypi/v/leakscan.svg)](https://pypi.org/project/leakscan/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/leakscan.svg)](https://pypi.org/project/leakscan/)
-[![Tests](https://github.com/Vasishta03/secret-scanner/actions/workflows/tests.yml/badge.svg)](https://github.com/Vasishta03/secret-scanner/actions/workflows/tests.yml)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/leakscan?period=total&units=ABBREVIATION&left_color=GREY&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/leakscan)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
