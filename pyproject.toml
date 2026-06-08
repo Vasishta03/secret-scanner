@@ -16,7 +16,6 @@ dependencies = [
 ]
 
 [project.scripts]
-secrets = "scanner.cli:cli"
 leakscan = "scanner.cli:cli"
 
 [project.optional-dependencies]
