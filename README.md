@@ -24,7 +24,7 @@ Most secret scanners are either bloated (Docker required, YAML hell) or miss the
 
 | Feature | leakscan | gitleaks | trufflehog |
 |---------|----------|----------|------------|
-| Install | `pip install` | Binary download | Binary / Docker |
+| Install | pip / brew / uvx / curl | Binary download | Binary / Docker |
 | Config required | No | Yes (TOML) | No |
 | Git history | Yes | Yes | Yes |
 | Staged-only scan | Yes | No | No |
@@ -38,14 +38,34 @@ Most secret scanners are either bloated (Docker required, YAML hell) or miss the
 
 ## Installation
 
+**Homebrew** (macOS / Linux)
+```bash
+brew tap Vasishta03/leakscan
+brew install leakscan
+```
+
+**pipx** (isolated, recommended for CLI tools)
+```bash
+pipx install leakscan
+```
+
+**uvx / uv**
+```bash
+uvx leakscan --help          # run without installing
+uv tool install leakscan     # permanent install
+```
+
+**pip**
 ```bash
 pip install leakscan
 ```
 
-Both `secrets` and `leakscan` commands are available after install.
+**curl one-liner**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vasishta03/secret-scanner/main/install.sh | sh
+```
 
-From source:
-
+**From source**
 ```bash
 git clone https://github.com/Vasishta03/secret-scanner
 cd secret-scanner
