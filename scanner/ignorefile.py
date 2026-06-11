@@ -1,6 +1,7 @@
 import fnmatch
 import re
 from pathlib import Path
+from typing import Optional
 
 IGNORE_FILENAME = ".leakscanignore"
 LEGACY_IGNORE_FILENAME = ".secretignore"
@@ -33,7 +34,18 @@ fake_*.py
 """
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern:
+# More than this many "**" segments in one pattern produces a regex with
+# multiple unanchored ".*" groups, which is vulnerable to catastrophic
+# backtracking (effectively a hang) on a long, non-matching path. Patterns
+# come from .leakscanignore files inside the scanned repo, which may be
+# untrusted, so reject anything past a small, generous limit.
+_MAX_DOUBLE_STAR = 2
+
+
+def _glob_to_regex(pattern: str) -> Optional[re.Pattern]:
+    if pattern.count("**") > _MAX_DOUBLE_STAR:
+        return None
+
     pattern = pattern.replace("\\", "/")
 
     if pattern.startswith("**/"):
@@ -79,8 +91,11 @@ def _matches(rel_str: str, pattern: str) -> bool:
         return fnmatch.fnmatch(name, pattern)
 
     if "**" in pattern:
+        regex = _glob_to_regex(pattern)
+        if regex is None:
+            return False
         try:
-            return bool(_glob_to_regex(pattern).match(normalized))
+            return bool(regex.match(normalized))
         except re.error:
             return False
 

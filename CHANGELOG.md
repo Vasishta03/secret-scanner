@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- `.leakscanignore` / `.secretignore` patterns with more than two `**`
+  segments could cause catastrophic regex backtracking, hanging a scan on
+  a crafted pattern committed to the scanned repo. Such patterns are now
+  rejected (treated as non-matching) instead of compiled.
+- `~/.leakscanrc` is now written with `0600` permissions, since it can
+  contain Slack/Discord webhook URLs.
+
 ## [0.4.0] - 2026-06-10
 
 ### Added

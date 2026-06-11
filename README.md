@@ -149,6 +149,8 @@ leakscan scan . --verify
 
 Makes safe read-only API calls to check if detected tokens are active. Supports 30+ services, including GitHub, GitLab, Stripe, OpenAI, Anthropic, HuggingFace, SendGrid, Slack, npm, Replicate, Telegram, Google API, Sentry, Vercel, Cloudflare, Supabase, Notion, Linear, Mailgun, Postmark, Railway, Cohere, Groq, Pinecone, Datadog, Twilio, and Azure AD.
 
+For most services this is a single read-only "who am I" request using the leaked token. The one exception is Azure AD client secrets: there is no standalone introspection endpoint, so leakscan sends the secret to Microsoft's OAuth token endpoint with a placeholder client ID. The error code returned tells us whether the secret itself is valid, but the request never obtains a token or accesses any resource. This does create a normal sign-in/audit log entry on the secret's Azure AD tenant.
+
 ### Scan a GitHub repo by URL
 
 ```bash

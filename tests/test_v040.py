@@ -226,6 +226,23 @@ def test_double_star_dir_pattern_matches_any_depth():
     assert not ignorefile.is_ignored(Path("/tmp/p/src/index.js"), Path("/tmp/p"), patterns)
 
 
+def test_pattern_with_excessive_double_stars_is_rejected_not_hung():
+    # A pattern with many "**" segments would otherwise compile to a regex
+    # with several unanchored ".*" groups, which is vulnerable to
+    # catastrophic backtracking on a long, non-matching path. Since
+    # .leakscanignore comes from the (possibly untrusted) scanned repo,
+    # such a pattern must be ignored quickly rather than hang the scan.
+    pattern = "/".join(["**"] * 12) + "/zzz_no_match"
+    candidate = Path("/" + "/".join(["aaaaaaaaaa"] * 30))
+
+    start = time.monotonic()
+    result = ignorefile.is_ignored(candidate, Path("/"), [pattern])
+    elapsed = time.monotonic() - start
+
+    assert result is False
+    assert elapsed < 1.0
+
+
 def test_trailing_slash_directory_pattern_matches_any_depth():
     patterns = ["tests/"]
     assert ignorefile.is_ignored(Path("/tmp/p/tests/test_foo.py"), Path("/tmp/p"), patterns)

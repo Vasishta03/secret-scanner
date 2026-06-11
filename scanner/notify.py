@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +65,10 @@ def save_webhook(kind: str, url: str, path: Optional[Path] = None) -> Path:
     config[key] = url
     lines = [f'{k}="{v}"' for k, v in config.items()]
     rc_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(rc_path, 0o600)
+    except OSError:
+        pass
     return rc_path
 
 
