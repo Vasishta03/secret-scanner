@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "leakscan"
-version = "0.3.1"
+version = "0.4.0"
 description = "CLI tool to detect leaked secrets and API keys in codebases and public GitHub repos, including git history and staged changes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ dependencies = [
     "click>=8.1",
     "rich>=13.0",
     "requests>=2.31",
+    "tqdm>=4.65",
 ]
 
 [project.scripts]

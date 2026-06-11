@@ -20,7 +20,7 @@ def _p(name: str, pattern: str, severity: str, description: str, flags: int = 0)
 
 
 PATTERNS: list[Pattern] = [
-    # CRITICAL — private keys and cloud root credentials
+    # CRITICAL - private keys and cloud root credentials
     _p("AWS Access Key ID",
        r"(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA|ASIA)[A-Z0-9]{16}",
        "CRITICAL", "AWS access key ID"),
@@ -41,7 +41,7 @@ PATTERNS: list[Pattern] = [
        r"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/]{86}==",
        "CRITICAL", "Azure storage account connection string"),
 
-    # HIGH — service tokens and live API keys
+    # HIGH - service tokens and live API keys
     _p("GitHub Personal Token",    r"ghp_[0-9a-zA-Z]{36}",                    "HIGH", "GitHub personal access token"),
     _p("GitHub OAuth Token",       r"gho_[0-9a-zA-Z]{36}",                    "HIGH", "GitHub OAuth token"),
     _p("GitHub App Token",         r"(?:ghu|ghs)_[0-9a-zA-Z]{36}",            "HIGH", "GitHub app/server token"),
@@ -89,7 +89,7 @@ PATTERNS: list[Pattern] = [
     _p("Twitter Bearer Token",     r"AAAAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{40,}", "HIGH", "Twitter/X bearer token"),
     _p("Mailchimp API Key",        r"[0-9a-f]{32}-us[0-9]{1,2}",              "HIGH", "Mailchimp API key"),
 
-    # HIGH — additional service tokens (v0.3.0)
+    # HIGH - additional service tokens (v0.3.0)
     _p("Supabase Service Key",
        r"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_-]{50,}\.[A-Za-z0-9_-]{20,}",
        "HIGH", "Supabase service role JWT key"),
@@ -124,7 +124,7 @@ PATTERNS: list[Pattern] = [
        r"(?i)twitch(?:.{0,20})?client.?secret\s*[=:]\s*['\"]?([a-z0-9]{30})['\"]?",
        "HIGH", "Twitch client secret"),
 
-    # MEDIUM — generic and contextual patterns
+    # MEDIUM - generic and contextual patterns
     _p("Generic API Key",
        r"(?i)(?:api_key|apikey|api-key)\s*[=:]\s*['\"]?([0-9a-zA-Z\-_]{16,})['\"]?",
        "MEDIUM", "Generic API key assignment"),
@@ -153,4 +153,67 @@ PATTERNS: list[Pattern] = [
     _p("Private Key File Path",
        r"(?i)(?:identity_file|private_key(?:_file)?)\s*[=:]\s*['\"]?([~\/][^\s'\"]+\.pem)['\"]?",
        "MEDIUM", "SSH/TLS private key file path in config"),
+
+    # CRITICAL/HIGH - database connection strings with embedded credentials (v0.3.2)
+    _p("MongoDB Connection String",
+       r"mongodb(?:\+srv)?://[^\s'\"]+:[^\s'\"@]+@[^\s'\"]+",
+       "CRITICAL", "MongoDB connection string with embedded credentials"),
+    _p("PostgreSQL Connection String",
+       r"postgres(?:ql)?://[^\s'\"]+:[^\s'\"@]+@[^\s'\"]+",
+       "CRITICAL", "PostgreSQL connection string with embedded credentials"),
+    _p("MySQL Connection String",
+       r"mysql://[^\s'\"]+:[^\s'\"@]+@[^\s'\"]+",
+       "CRITICAL", "MySQL connection string with embedded credentials"),
+    _p("Redis Connection String",
+       r"rediss?://[^\s'\"]*:[^\s'\"@]+@[^\s'\"]+",
+       "HIGH", "Redis connection string with embedded password"),
+
+    # MEDIUM/HIGH/CRITICAL - certificates and infrastructure tokens (v0.3.2)
+    _p("PEM Certificate",          r"-----BEGIN CERTIFICATE-----",            "MEDIUM", "PEM-encoded X.509 certificate"),
+    _p("Docker Config Auth",
+       r'"auths"\s*:\s*\{[^}]*"auth"\s*:\s*"[A-Za-z0-9+/=]{8,}"',
+       "HIGH", "Docker registry credentials in config.json"),
+    _p("Kubernetes Service Account Token",
+       r"eyJhbGciOiJSUzI1NiIsImtpZCI6[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+       "CRITICAL", "Kubernetes service account JWT (RS256)"),
+    _p("Firebase Admin SDK Key",
+       r'"client_email"\s*:\s*"firebase-adminsdk-[a-z0-9]+@[a-z0-9\-]+\.iam\.gserviceaccount\.com"',
+       "CRITICAL", "Firebase Admin SDK service account"),
+    _p("Expo Access Token",        r"expo_[A-Za-z0-9_\-]{35,}",               "HIGH", "Expo access token"),
+    _p("Fly.io API Token",         r"fm2_[A-Za-z0-9+/_=-]{60,}",              "HIGH", "Fly.io macaroon API token"),
+    _p("WireGuard Private Key",
+       r"(?im)^(?:PrivateKey|PresharedKey)\s*=\s*[A-Za-z0-9+/]{43}=\s*$",
+       "CRITICAL", "WireGuard private/preshared key"),
+    _p("PagerDuty API Key",
+       r"(?i)pagerduty(?:.{0,20})?['\"]([a-zA-Z0-9_+-]{20})['\"]",
+       "HIGH", "PagerDuty API key"),
+    _p("Elastic Cloud API Key",
+       r"(?i)(?:elastic|es)[_-]?(?:cloud[_-]?)?api[_-]?key\s*[=:]\s*['\"]?([A-Za-z0-9+/]{20,}={0,2})['\"]?",
+       "HIGH", "Elastic Cloud API key"),
+
+    # HIGH/CRITICAL - additional cloud and SaaS provider secrets (v0.3.2)
+    _p("Azure AD Client Secret",
+       r"(?i)(?:azure|aad)(?:.{0,20})?client[_-]?secret\s*[=:]\s*['\"]?([A-Za-z0-9_~.\-]{34,40})['\"]?",
+       "CRITICAL", "Azure AD application client secret"),
+    _p("Cohere API Key",
+       r"(?i)cohere(?:.{0,20})?['\"]([A-Za-z0-9]{40})['\"]",
+       "HIGH", "Cohere API key"),
+    _p("Groq API Key",             r"gsk_[A-Za-z0-9]{52}",                    "HIGH", "Groq API key"),
+    _p("Pinecone API Key",
+       r"(?i)pinecone(?:.{0,20})?['\"]([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['\"]",
+       "HIGH", "Pinecone API key"),
+    _p("Atlassian API Token",      r"ATATT3[A-Za-z0-9_\-=]{180,}",            "HIGH", "Jira/Atlassian API token"),
+    _p("PayPal Client Secret",
+       r"(?i)paypal(?:.{0,20})?client[_-]?secret\s*[=:]\s*['\"]?(E[A-Za-z0-9_-]{79})['\"]?",
+       "HIGH", "PayPal client secret"),
+    _p("Razorpay Key ID",          r"rzp_(?:live|test)_[A-Za-z0-9]{14,}",     "HIGH", "Razorpay API key ID"),
+    _p("Postmark Server Token",
+       r"(?i)postmark(?:.{0,20})?['\"]([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['\"]",
+       "HIGH", "Postmark server API token"),
+    _p("Railway API Token",
+       r"(?i)railway(?:.{0,20})?['\"]([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['\"]",
+       "HIGH", "Railway project API token"),
+    _p("Cloudflare API Token",
+       r"(?i)cloudflare(?:.{0,20})?api[_-]?token\s*[=:]\s*['\"]?([A-Za-z0-9_-]{40})['\"]?",
+       "HIGH", "Cloudflare scoped API token"),
 ]

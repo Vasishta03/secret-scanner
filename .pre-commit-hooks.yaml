@@ -1,0 +1,17 @@
+- id: leakscan
+  name: leakscan
+  description: Scan staged changes for leaked secrets, API keys, and credentials before commit.
+  entry: leakscan scan . --staged --severity HIGH --no-progress --brief --no-blame
+  language: python
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]
+
+- id: leakscan-full
+  name: leakscan (full repository scan)
+  description: Run a full leakscan secret scan over the entire repository, including history-free static analysis of every tracked file.
+  entry: leakscan scan . --no-progress
+  language: python
+  pass_filenames: false
+  always_run: true
+  stages: [manual]

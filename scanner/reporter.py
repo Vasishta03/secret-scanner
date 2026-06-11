@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -10,7 +11,9 @@ from rich.table import Table
 from rich import box
 from rich.text import Text
 
+from scanner.blame import scraping_risk, scraping_warning
 from scanner.engine import Finding, ScanResult
+from scanner.remediation import get_remediation
 
 console = Console(stderr=False)
 
@@ -21,6 +24,21 @@ SEVERITY_COLORS = {
     "LOW":      "dim white",
 }
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+# Colors used for the full per-finding blast-radius blocks (default output).
+BLOCK_SEVERITY_STYLE = {
+    "CRITICAL": "bold red",
+    "HIGH":     "yellow",
+    "MEDIUM":   "cyan",
+    "LOW":      "white",
+}
+
+RISK_COLORS = {
+    "LOW":      "green",
+    "MEDIUM":   "yellow",
+    "HIGH":     "red",
+    "CRITICAL": "bold red",
+}
 
 VERIFIED_STYLE = {
     "LIVE":    ("[bold green]LIVE[/bold green]",    "bold green"),
@@ -43,7 +61,20 @@ def _display(value: str, redact: bool) -> str:
     return _redact(value) if redact else value
 
 
-def print_terminal(result: ScanResult, redact: bool = False) -> None:
+def _blame_dict(f: Finding) -> Optional[dict]:
+    if not f.blame:
+        return None
+    return {
+        "commit": f.blame.commit,
+        "author_email": f.blame.author_email,
+        "author_date": f.blame.author_date,
+        "age": f.blame.age_human,
+        "branch": f.blame.branch,
+        "scraping_risk": scraping_risk(f.blame.age_seconds),
+    }
+
+
+def print_terminal(result: ScanResult, redact: bool = False, brief: bool = False) -> None:
     findings = _sorted(result.findings)
 
     if not findings:
@@ -51,6 +82,15 @@ def print_terminal(result: ScanResult, redact: bool = False) -> None:
         _print_summary(result)
         return
 
+    if brief:
+        _print_table(findings, redact)
+    else:
+        _print_blocks(findings, redact)
+
+    _print_summary(result)
+
+
+def _print_table(findings: list[Finding], redact: bool) -> None:
     has_commits = any(f.commit for f in findings)
     has_verified = any(f.verified for f in findings)
 
@@ -89,7 +129,48 @@ def print_terminal(result: ScanResult, redact: bool = False) -> None:
         table.add_row(*row)
 
     console.print(table)
-    _print_summary(result)
+
+
+def _print_blocks(findings: list[Finding], redact: bool) -> None:
+    """Print one detailed block per finding: severity, location, match,
+    blast-radius guidance, and (when available) git blame and secret age."""
+    for f in findings:
+        color = BLOCK_SEVERITY_STYLE.get(f.severity, "white")
+        entropy_tag = f" (entropy {f.entropy})" if f.entropy else ""
+        display_val = _display(f.matched_value, redact)
+
+        console.print(f"[{color}]\\[{f.severity}][/{color}] [bold]{f.secret_type}[/bold]{entropy_tag}")
+        console.print(f"  File: {f.file}:{f.line_number}")
+        console.print(f"  Match: {display_val}")
+        if f.commit:
+            console.print(f"  Commit: {f.commit}")
+        if f.verified == "LIVE":
+            console.print("  Status: [bold green]LIVE[/bold green] (confirmed active via API)")
+        elif f.verified == "REVOKED":
+            console.print("  Status: [dim green]REVOKED[/dim green] (no longer active)")
+
+        rem = get_remediation(f.secret_type)
+        console.print(f"  If leaked: {rem.consequence}")
+        console.print(f"  Blast radius: [bold]{rem.blast_radius}[/bold]")
+        console.print(f"  Rotate at: {rem.rotation_url}")
+
+        if f.blame:
+            risk = scraping_risk(f.blame.age_seconds)
+            risk_color = RISK_COLORS.get(risk, "white")
+            console.print(
+                f"  Git blame: {f.blame.author_email} - commit {f.blame.commit} "
+                f"({f.blame.age_human} ago, branch {f.blame.branch or 'unknown'})"
+            )
+            console.print(f"    \"{f.blame.message}\"")
+            console.print(
+                f"  Secret age: {f.blame.age_human} - "
+                f"scraping risk: [{risk_color}]{risk}[/{risk_color}]"
+            )
+            warning = scraping_warning(f.blame.age_seconds)
+            if warning:
+                console.print(f"  [bold red]{warning}[/bold red]")
+
+        console.print()
 
 
 def _print_summary(result: ScanResult) -> None:
@@ -146,6 +227,9 @@ def to_json(result: ScanResult, redact: bool = False) -> str:
                     "commit": f.commit,
                     "verified": f.verified,
                     "fingerprint": f.fingerprint(),
+                    "blast_radius": get_remediation(f.secret_type).blast_radius,
+                    "rotation_url": get_remediation(f.secret_type).rotation_url,
+                    "blame": _blame_dict(f),
                 }
                 for f in findings
             ],
@@ -159,10 +243,16 @@ def to_csv(result: ScanResult, redact: bool = False) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf,
-        fieldnames=["severity", "type", "file", "line", "match", "entropy", "source", "commit", "verified", "fingerprint"],
+        fieldnames=[
+            "severity", "type", "file", "line", "match", "entropy", "source",
+            "commit", "verified", "fingerprint", "blast_radius", "rotation_url",
+            "secret_age", "scraping_risk",
+        ],
     )
     writer.writeheader()
     for f in findings:
+        rem = get_remediation(f.secret_type)
+        blame_info = _blame_dict(f)
         writer.writerow({
             "severity": f.severity,
             "type": f.secret_type,
@@ -174,6 +264,10 @@ def to_csv(result: ScanResult, redact: bool = False) -> str:
             "commit": f.commit or "",
             "verified": f.verified or "",
             "fingerprint": f.fingerprint(),
+            "blast_radius": rem.blast_radius,
+            "rotation_url": rem.rotation_url,
+            "secret_age": blame_info["age"] if blame_info else "",
+            "scraping_risk": blame_info["scraping_risk"] if blame_info else "",
         })
     return buf.getvalue()
 
@@ -204,7 +298,7 @@ def to_sarif(result: ScanResult) -> str:
             "tool": {
                 "driver": {
                     "name": "secret-scanner",
-                    "version": "0.3.0",
+                    "version": "0.4.0",
                     "informationUri": "https://github.com/Vasishta03/secret-scanner",
                     "rules": rules,
                 }
@@ -224,6 +318,10 @@ def to_sarif(result: ScanResult) -> str:
                         }
                     }],
                     "partialFingerprints": {"primaryLocationLineHash": f.fingerprint()},
+                    "properties": {
+                        "blastRadius": get_remediation(f.secret_type).blast_radius,
+                        "rotationUrl": get_remediation(f.secret_type).rotation_url,
+                    },
                 }
                 for f in findings
             ],
@@ -256,6 +354,7 @@ def to_disclosure_report(username: str, result: ScanResult, redact: bool = False
     ]
 
     for f in findings:
+        rem = get_remediation(f.secret_type)
         lines += [
             f"### [{f.severity}] {f.secret_type}",
             f"- **Repository/File:** `{f.file}`",
@@ -266,9 +365,18 @@ def to_disclosure_report(username: str, result: ScanResult, redact: bool = False
             lines.append(f"- **Commit:** `{f.commit}`")
         if f.verified:
             lines.append(f"- **Verified:** {f.verified}")
+        if f.blame:
+            lines.append(
+                f"- **Last touched:** {f.blame.author_email} on {f.blame.author_date} "
+                f"({f.blame.age_human} ago, commit `{f.blame.commit}`)"
+            )
         lines += [
+            f"- **Blast radius:** {rem.blast_radius}",
             "",
-            "**Recommendation:** Rotate this credential immediately and audit access logs.",
+            f"**If leaked:** {rem.consequence}",
+            "",
+            f"**Recommendation:** Rotate this credential immediately at {rem.rotation_url} "
+            "and audit access logs.",
             "",
         ]
 
@@ -278,7 +386,7 @@ def to_disclosure_report(username: str, result: ScanResult, redact: bool = False
         "1. Rotate all identified credentials immediately.",
         "2. Use environment variables or a secrets manager (e.g. Vault, AWS Secrets Manager).",
         "3. Add pre-commit hooks to prevent future leaks.",
-        "4. Review git history — secrets committed then deleted are still visible.",
+        "4. Review git history - secrets committed then deleted are still visible.",
         "",
         "---",
         "*Report generated by [secret-scanner](https://github.com/Vasishta03/secret-scanner)*",

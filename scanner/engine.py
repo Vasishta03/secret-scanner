@@ -1,18 +1,32 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, NamedTuple, Optional
 
+from scanner.blame import BlameInfo
 from scanner.entropy import scan_line
 from scanner.ignorefile import is_ignored, load_ignore_patterns
 from scanner.patterns import PATTERNS
 
-MAX_FILE_BYTES = 1_000_000
+# Files larger than this are skipped entirely (with a warning).
+DEFAULT_MAX_FILE_SIZE = 50 * 1_000_000  # 50 MB
+
+# Files are read in chunks of this size so memory stays flat regardless
+# of file size. A trailing partial line ("leftover") is carried over to
+# the next chunk so patterns are never split across a chunk boundary.
+DEFAULT_CHUNK_SIZE = 1_000_000  # 1 MB
+
+# First N bytes inspected to decide whether a file is binary.
+_BINARY_SNIFF_BYTES = 8192
+
 _ALLOWLIST_RE = re.compile(r"#\s*(?:nosec|gitleaks:allow|secretscanner:allow)\b", re.IGNORECASE)
 
 
@@ -28,6 +42,7 @@ class Finding:
     source: str = "regex"
     commit: Optional[str] = None
     verified: Optional[str] = None
+    blame: Optional[BlameInfo] = None
 
     def fingerprint(self) -> str:
         return hashlib.sha256(f"{self.secret_type}:{self.matched_value}".encode()).hexdigest()[:16]
@@ -40,6 +55,16 @@ class ScanResult:
     files_skipped: int = 0
     commits_scanned: int = 0
     errors: list[str] = field(default_factory=list)
+    binary_files_skipped: int = 0
+    large_files_skipped: list[str] = field(default_factory=list)
+    ignored_files: list[str] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
+
+    @property
+    def files_per_second(self) -> float:
+        if self.elapsed_seconds <= 0:
+            return 0.0
+        return self.files_scanned / self.elapsed_seconds
 
 
 def _check_line(line: str, line_number: int, filepath: str, entropy_threshold: float) -> list[Finding]:
@@ -106,16 +131,96 @@ def _iter_diff_additions(patch: str, filepath: str = None) -> Iterator[tuple[str
             current_line += 1
 
 
-def _scan_file_worker(args: tuple) -> tuple[list[Finding] | None, str | None]:
-    path, eff_threshold = args
+def _is_binary(path: Path) -> bool:
+    """Treat a file as binary if its first chunk contains a NUL byte."""
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        return _scan_content(text, str(path), eff_threshold), None
+        with open(path, "rb") as f:
+            sniff = f.read(_BINARY_SNIFF_BYTES)
+        return b"\x00" in sniff
+    except Exception:
+        return False
+
+
+def _iter_lines_chunked(path: Path, chunk_size: int) -> Iterator[tuple[int, str]]:
+    """Yield (line_number, line) pairs while reading the file in chunks.
+
+    Memory stays proportional to chunk_size (plus one line) regardless
+    of file size. A trailing partial line from one chunk ("leftover")
+    is prepended to the next chunk so no pattern is ever split across
+    a chunk boundary.
+    """
+    leftover = ""
+    line_number = 0
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            data = leftover + chunk
+            lines = data.split("\n")
+            leftover = lines.pop()
+            for line in lines:
+                line_number += 1
+                yield line_number, line.rstrip("\r")
+
+    if leftover:
+        line_number += 1
+        yield line_number, leftover.rstrip("\r")
+
+
+class _FileScanResult(NamedTuple):
+    path: str
+    findings: Optional[list[Finding]]
+    error: Optional[str]
+    skip_reason: Optional[str]  # "large", "binary", or None
+
+
+def _scan_file_worker(args: tuple) -> _FileScanResult:
+    path, eff_threshold, max_file_size, chunk_size = args
+    path_str = str(path)
+
+    try:
+        size = path.stat().st_size
     except Exception as e:
-        return None, f"{path}: {e}"
+        return _FileScanResult(path_str, None, f"{path}: {e}", None)
+
+    if size > max_file_size:
+        return _FileScanResult(path_str, None, None, "large")
+
+    if _is_binary(path):
+        return _FileScanResult(path_str, None, None, "binary")
+
+    try:
+        findings: list[Finding] = []
+        for line_number, line in _iter_lines_chunked(path, chunk_size):
+            findings.extend(_check_line(line, line_number, path_str, eff_threshold))
+        return _FileScanResult(path_str, findings, None, None)
+    except Exception as e:
+        return _FileScanResult(path_str, None, f"{path}: {e}", None)
 
 
-def scan_path(root: Path, entropy_threshold: float = 4.5, no_entropy: bool = False) -> ScanResult:
+def scan_path(
+    root: Path,
+    entropy_threshold: float = 4.5,
+    no_entropy: bool = False,
+    threads: Optional[int] = None,
+    max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    on_finding: Optional[Callable[[Finding], None]] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> ScanResult:
+    """Scan all files under root using a thread pool.
+
+    Args:
+        threads: worker thread count (default: os.cpu_count()).
+        max_file_size: files larger than this are skipped with a warning.
+        chunk_size: bytes read per chunk for memory-efficient scanning.
+        on_finding: called for each Finding as soon as its file finishes,
+            allowing results to stream to the caller before the whole
+            scan completes.
+        on_progress: called as (files_completed, files_total) after each
+            file finishes, for progress bars.
+    """
     result = ScanResult()
     patterns = load_ignore_patterns(root)
     eff_threshold = entropy_threshold if not no_entropy else 999.0
@@ -124,25 +229,51 @@ def scan_path(root: Path, entropy_threshold: float = 4.5, no_entropy: bool = Fal
     for path in _walk(root):
         if is_ignored(path, root, patterns):
             result.files_skipped += 1
-            continue
-        try:
-            if path.stat().st_size > MAX_FILE_BYTES:
-                result.files_skipped += 1
-                continue
-        except Exception:
-            result.files_skipped += 1
+            try:
+                result.ignored_files.append(str(path.relative_to(root)))
+            except ValueError:
+                result.ignored_files.append(str(path))
             continue
         to_scan.append(path)
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        for findings, error in executor.map(_scan_file_worker, [(p, eff_threshold) for p in to_scan]):
-            if error:
-                result.errors.append(error)
-                result.files_skipped += 1
-            else:
-                result.findings.extend(findings)
-                result.files_scanned += 1
+    worker_threads = threads if threads and threads > 0 else (os.cpu_count() or 4)
+    lock = threading.Lock()
+    start_time = time.monotonic()
 
+    with ThreadPoolExecutor(max_workers=worker_threads) as executor:
+        futures = {
+            executor.submit(_scan_file_worker, (p, eff_threshold, max_file_size, chunk_size)): p
+            for p in to_scan
+        }
+        completed = 0
+        for future in as_completed(futures):
+            file_result = future.result()
+            completed += 1
+
+            if file_result.skip_reason == "large":
+                with lock:
+                    result.files_skipped += 1
+                    result.large_files_skipped.append(file_result.path)
+            elif file_result.skip_reason == "binary":
+                with lock:
+                    result.files_skipped += 1
+                    result.binary_files_skipped += 1
+            elif file_result.error:
+                with lock:
+                    result.errors.append(file_result.error)
+                    result.files_skipped += 1
+            else:
+                with lock:
+                    result.findings.extend(file_result.findings)
+                    result.files_scanned += 1
+                if on_finding:
+                    for f in file_result.findings:
+                        on_finding(f)
+
+            if on_progress:
+                on_progress(completed, len(to_scan))
+
+    result.elapsed_seconds = time.monotonic() - start_time
     return result
 
 
